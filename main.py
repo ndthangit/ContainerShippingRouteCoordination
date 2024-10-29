@@ -1,6 +1,5 @@
 # import data_models
 import sys
-
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 
@@ -151,5 +150,6 @@ search_parameters.first_solution_strategy = (
 
 # Solve the problem.
 solution = routing.SolveWithParameters(search_parameters)
+print_solution(manager, routing, solution)
 #
 # # data_models.printSolution(data, manager, routing, solution)
