@@ -41,6 +41,7 @@ def create_data_model():
     data['truck_capacities'] = [40 for i in range(data['num_trucks'])]
 
     data['requests'] = {}
+
     while True:
         line = sys.stdin.readline().strip()
         if line == '#':
@@ -55,7 +56,7 @@ def create_data_model():
         drop_action = tokens[7]
         drop_duration = int(tokens[8])
 
-        # Lưu vào từ điển requests
+        # requests
         data['requests'][req_id] = {
             'size': size,
             'pickup_location': p1,
@@ -65,26 +66,35 @@ def create_data_model():
             'drop_action': drop_action,
             'drop_duration': drop_duration
         }
-        # data['demands'] = [0] * data['num_points']
-        # for req in data['requests'].values():
-        #     data['demands'][req['pickup_location']] = req['size']
-        #     data['demands'][req['drop_location']] = -req['size']
 
     return data
+
+
 def print_solution(manager, routing, solution):
     """Prints solution on console."""
-    print(f"Objective: {solution.ObjectiveValue()} miles")
-    index = routing.Start(0)
-    plan_output = "Route for vehicle 0:\n"
-    route_distance = 0
-    while not routing.IsEnd(index):
-        plan_output += f" {manager.IndexToNode(index)} ->"
-        previous_index = index
-        index = solution.Value(routing.NextVar(index))
-        route_distance += routing.GetArcCostForVehicle(previous_index, index, 0)
-    plan_output += f" {manager.IndexToNode(index)}\n"
+    plan_output = f'ROUTES {manager.GetNumberOfVehicles()}\n'
+    for vehicle_id in range(manager.GetNumberOfVehicles()):
+        index = routing.Start(vehicle_id)
+        plan_output += f'TRUCK {vehicle_id + 1}\n'
+        while not routing.IsEnd(index):
+            node_index = manager.IndexToNode(index)
+            action = ''
+            request_id = ''
+            for req_id, req in data['requests'].items():
+                if req['pickup_location'] == node_index:
+                    action = req['pickup_action']
+                    request_id = req_id + 1
+                elif req['drop_location'] == node_index:
+                    action = req['drop_action']
+                    request_id = req_id + 1
+            if action:
+                plan_output += f'{node_index + 1} {action} {request_id}\n'
+            else:
+                plan_output += f'{node_index + 1} STOP\n'
+            index = solution.Value(routing.NextVar(index))
+        plan_output += '#\n'
     print(plan_output)
-    plan_output += f"Route distance: {route_distance}miles\n"
+    return plan_output
 
 
 data = create_data_model()
@@ -94,7 +104,6 @@ manager = pywrapcp.RoutingIndexManager(
 )
 routing = pywrapcp.RoutingModel(manager)
 
-
 # Add Pickup and Delivery constraints
 for req in data['requests'].values():
     pickup_index = manager.NodeToIndex(req['pickup_location'])
@@ -102,48 +111,39 @@ for req in data['requests'].values():
     routing.AddPickupAndDelivery(pickup_index, delivery_index)
     routing.solver().Add(routing.VehicleVar(pickup_index) == routing.VehicleVar(delivery_index))
 
-def distance_callback(from_index, to_index):
+
+def time_callback(from_index, to_index):
     '''Returns the delivery-time between the two nodes.'''
     from_node = manager.IndexToNode(from_index)
     to_node = manager.IndexToNode(to_index)
     return data['delivery_time'][from_node][to_node]
 
 
-transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+transit_callback_index = routing.RegisterTransitCallback(time_callback)
 
 # Define cost of each arc.
 routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
-# def demand_callback(from_index):
-#     '''Returns the demand of the node.'''
-#     # error
-#     from_node = manager.IndexToNode(from_index)
-#
-#     # Check if the node is a pickup or drop location
-#     for req_id, req in data['requests'].items():
-#         if req['pickup_location'] == from_node:
-#             return req['size']  # Positive demand for pickup
-#         elif req['drop_location'] == from_node:
-#             return -req['size']  # Negative demand for drop
-#
-#     return 0  # No demand for other nodes
-#
-#
-# #
-# demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-# #
-# routing.AddDimensionWithVehicleCapacity(
-#     demand_callback_index,
-#     0,  # null capacity slack
-#     data['truck_capacities'],  # vehicle maximum capacities
-#     True,  # start cumul to zero
-#     'Capacity',
-# )
+
+def demand_callback(from_index):
+    """Returns the demand of the node."""
+    # Convert from routing variable Index to demands NodeIndex.
+    from_node = manager.IndexToNode(from_index)
+    return data['requests'][from_node]
+
+
+demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+routing.AddDimensionWithVehicleCapacity(
+    demand_callback_index,
+    0,  # null capacity slack
+    data['truck_capacities'],  # vehicle maximum capacities
+    True,  # start cumul to zero
+    "Capacity",
+)
 
 # Setting first solution heuristic.
 search_parameters = pywrapcp.DefaultRoutingSearchParameters()
 
-#
 search_parameters.first_solution_strategy = (
     routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
 )
