@@ -1,3 +1,4 @@
-[submodule "csrc"]
-	path = csrc
+[submodule "extern/csrc"]
+	path = extern/csrc
 	url = https://github.com/Serious-senpai/csrc
+	branch = main
