@@ -1,22 +1,38 @@
 import sys
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
+time_max = 50000
 
 def create_data_model():
     data = {}
-    # Dòng đầu tiên: Lấy số điểm (Points N)
-    _, num_points = [x for x in sys.stdin.readline().split()]
-    data['num_points'] = int(num_points)
 
-    # Dòng tiếp theo: Khoảng cách giữa các điểm (DISTANCES N^2)
+    # Đọc số điểm (Points N)
+    _, num_points = [x for x in sys.stdin.readline().split()]
+    num_points = int(num_points)
+    data['num_points'] = num_points
+
+    # Tổng số điểm mới sau khi tách các điểm thành pickup và delivery
+    total_points = 2 * num_points
+    data['total_points'] = total_points
+
+    # Đọc khoảng cách giữa các điểm (DISTANCES N^2)
     _, n_squared = [x for x in sys.stdin.readline().split()]
-    n = int(num_points)
-    distance = [[0] * n for _ in range(n)]
+    distance = [[float('inf')] * total_points for _ in range(total_points)]
 
     # Đọc các dòng khoảng cách
     for _ in range(int(n_squared)):
         i, j, d = [int(x) for x in sys.stdin.readline().split()]
         distance[i - 1][j - 1] = d
+        distance[i - 1 + num_points][j - 1] = d
+        distance[i - 1][j - 1 + num_points] = d
+        distance[i - 1 + num_points][j - 1 + num_points] = d
+
+    for i in range(num_points):
+        pickup_index = i
+        delivery_index = i + num_points
+        distance[pickup_index][delivery_index] = time_max
+        distance[delivery_index][pickup_index] = time_max
+
     data['delivery_time'] = distance
 
     # Đọc thông tin rơ-mooc (TRAILER p d)
@@ -29,18 +45,25 @@ def create_data_model():
     data['num_trucks'] = int(num_trucks)
     data['truck_location'] = {}
 
-    # vị trí đầu kéo của các xe
+    # Vị trí đầu kéo của các xe
     for _ in range(int(num_trucks)):
         truck_id, location = [int(x) for x in sys.stdin.readline().split()]
         data['truck_location'][truck_id - 1] = location - 1
-    # vị tr bắt đầu và kết thúc của các xe
+    # Vị trí bắt đầu và kết thúc của các xe
     data['starts'] = [data['truck_location'][i] for i in range(data['num_trucks'])]
     data['ends'] = [data['truck_location'][i] for i in range(data['num_trucks'])]
 
-    data['truck_capacities'] = [40 for i in range(data['num_trucks'])]
+    data['truck_capacities'] = [40 for _ in range(data['num_trucks'])]
+
+    data['checkPickUP'] = [False] * 2 * num_points
+    data['checkDrop'] = [False] * 2 * num_points
+
+    data['num_req_required_trailer'] =0
+    data['num_req_remaining_trailer_after_dropping'] = 0
 
     data['requests'] = {}
 
+    # Đọc thông tin các yêu cầu
     while True:
         line = sys.stdin.readline().strip()
         if line == '#':
@@ -55,181 +78,197 @@ def create_data_model():
         drop_action = tokens[7]
         drop_duration = int(tokens[8])
 
-        # requests
+        # Lưu yêu cầu với các điểm mới (pickup là p1 và delivery là p2 + num_points)
         data['requests'][req_id] = {
             'size': size,
             'pickup_location': p1,
             'pickup_action': pickup_action,
             'pickup_duration': pickup_duration,
-            'drop_location': p2,
+            'drop_location': p2 + num_points,  # Sử dụng chỉ số đã chuyển đổi
             'drop_action': drop_action,
             'drop_duration': drop_duration
         }
+        if pickup_action == 'PICKUP_CONTAINER_TRAILER':
+            data['checkPickUP'][p1] = True
+        if pickup_action == 'PICKUP_CONTAINER':
+            data['num_req_required_trailer'] += 1
+        if drop_action == 'DROP_CONTAINER_TRAILER':
+            data['checkDrop'][p2 + num_points] = True
+        if drop_action == 'DROP_CONTAINER':
+            data['num_req_remaining_trailer_after_dropping'] += 1
+
+    num_romooc_copies = data['num_req_required_trailer']  +data['num_req_remaining_trailer_after_dropping']# Số bản sao
+    romooc_copies_indices = list(range(total_points, total_points + num_romooc_copies))
+    total_points += num_romooc_copies
+    data['total_points'] = total_points
+
+
+    # Cập nhật khoảng cách cho các bản sao
+    new_distance = [[float('inf')] * total_points for _ in range(total_points)]
+    for i in range(len(distance)):
+        for j in range(len(distance[i])):
+            new_distance[i][j] = distance[i][j]
+
+    # Đặt khoảng cách giữa romooc_location, romooc_location_numpoints và các bản sao
+    romooc_location = data['Romooc_location']
+    romooc_location_numpoints = romooc_location + num_points
+
+    # Cập nhật khoảng cách từ các bản sao đến các điểm khác
+    for copy_idx in romooc_copies_indices:
+        for point in range(data['total_points']):
+            # Nếu điểm không nằm trong danh sách các bản sao
+            if point not in romooc_copies_indices and point != romooc_location and point != romooc_location_numpoints:
+                # Khoảng cách từ bản sao đến điểm khác được sao chép từ romooc_location
+                new_distance[copy_idx][point] = new_distance[data['Romooc_location']][point]
+                new_distance[point][copy_idx] = new_distance[point][data['Romooc_location']]
+
+    # Đặt khoảng cách giữa các bản sao với romooc_location và romooc_location_numpoints
+    for copy_idx in romooc_copies_indices:
+        new_distance[romooc_location][copy_idx] = time_max
+        new_distance[copy_idx][romooc_location] = time_max
+
+        new_distance[romooc_location_numpoints][copy_idx] = time_max
+        new_distance[copy_idx][romooc_location_numpoints] = time_max
+
+    # Đặt khoảng cách giữa các bản sao với nhau
+    for i in romooc_copies_indices:
+        for j in romooc_copies_indices:
+            if i != j:
+                new_distance[i][j] = time_max
+            else:
+                new_distance[i][j] = 0
+    # Gán lại giá trị cập nhật
+    data['delivery_time'] = new_distance
+
+    #danh sách các điểm lấy romooc
+    data['list_romooc_indices'] = romooc_copies_indices[:data['num_req_required_trailer']]
+    data['list_romooc_indices'].append(romooc_location)
+    data['list_romooc_indices'].append(romooc_location_numpoints)
+    data['list_romooc_removing'] = romooc_copies_indices[data['num_req_required_trailer']:]
+
+    data['demands'] = [0 for i in range(total_points)]
+    for req in data['requests'].values():
+        data['demands'][req['pickup_location']] = req['size']
+        data['demands'][req['drop_location']] = -req['size']
+
+    data['wait_time'] = [0 for i in range(total_points)]
+    data['wait_time'][data['Romooc_location']] = data['Romooc_time']
+    data['wait_time'][data['Romooc_location'] + num_points] = data['Romooc_time']
+    for req in data['requests'].values():
+        data['wait_time'][req['pickup_location']] = req['pickup_duration']
+        data['wait_time'][req['drop_location']] = req['drop_duration']
+    data['romooc_capacity'] = [1 for i in range(data['num_trucks'])]
 
     return data
 
-
-# def print_solution(data,manager, routing, solution):
-#     """Prints solution on console."""
-#     plan_output = f'ROUTES {manager.GetNumberOfVehicles()}\n'
-#     max_route_distance = 0
-#     for vehicle_id in range(manager.GetNumberOfVehicles()):
-#         index = routing.Start(vehicle_id)
-#         plan_output += f'TRUCK {vehicle_id + 1}\n'
-#         route_distance = 0
-#         while not routing.IsEnd(index):
-#             node_index = manager.IndexToNode(index)
-#             action = ''
-#             request_id = ''
-#             for req_id, req in data['requests'].items():
-#                 if req['pickup_location'] == node_index:
-#                     action = req['pickup_action']
-#                     request_id = req_id + 1
-#                 elif req['drop_location'] == node_index:
-#                     action = req['drop_action']
-#                     request_id = req_id + 1
-#             if action:
-#                 plan_output += f'{node_index + 1} {action} {request_id}\n'
-#             else:
-#                 plan_output += f'{node_index + 1} STOP\n'
-#             previous_index = node_index
-#             node_index = solution.Value(routing.NextVar(node_index))
-#             route_distance += routing.GetArcCostForVehicle(previous_index, index, vehicle_id)
-#         plan_output += f'Total distance of the route: {route_distance}m\n'
-#         max_route_distance = max(route_distance, max_route_distance)
-#         plan_output += '\n'
-#
-#         plan_output += '#\n'
-#     plan_output += f'Maximum of the route distances: {max_route_distance}m\n'
-#
-#     print(plan_output)
-#     return plan_output
 
 def print_solution(data, manager, routing, solution):
     """Prints solution on console."""
     print(f"Objective: {solution.ObjectiveValue()}")
     max_route_distance = 0
     capacity_dimension = routing.GetDimensionOrDie("Capacity")
+    romooc_dimension = routing.GetDimensionOrDie("Romooc")
+    time_dimension = routing.GetDimensionOrDie("Time")
+
     for vehicle_id in range(data['num_trucks']):
         index = routing.Start(vehicle_id)
         plan_output = f"Route for vehicle {vehicle_id + 1}:\n"
-        route_distance = 0
+        total_time = 0
         while not routing.IsEnd(index):
             node_index = manager.IndexToNode(index)
             load = solution.Value(capacity_dimension.CumulVar(index))
-            plan_output += f" {node_index + 1} (Load: {load}) -> "
+            romooc_state = solution.Value(romooc_dimension.CumulVar(index))
+            plan_output += f"{node_index + 1} (Load:{load}, Romooc:{romooc_state}, total_time: {total_time}) -> "
+
             previous_index = index
             index = solution.Value(routing.NextVar(index))
-            route_distance += routing.GetArcCostForVehicle(
-                previous_index, index, vehicle_id
-            )
+            total_time += solution.Value(time_dimension.CumulVar(previous_index))
         node_index = manager.IndexToNode(index)
         load = solution.Value(capacity_dimension.CumulVar(index))
-        plan_output += f"{node_index + 1} (Load: {load})\n"
-        plan_output += f"Distance of the route: {route_distance}m\n"
+        romooc_state = solution.Value(romooc_dimension.CumulVar(index))
+        total_time += solution.Min(time_dimension.CumulVar(index))
+        plan_output += f"{node_index + 1} (Load:{load}, Romooc:{romooc_state})\n"
+
+        plan_output += f"Time of the route: {total_time}m\n"
         print(plan_output)
-        max_route_distance = max(route_distance, max_route_distance)
-    print(f"Maximum of the route distances: {max_route_distance}m")
-    # for vehicle_id in range(manager.GetNumberOfVehicles()):
-    #     for from_index in range(manager.GetNumberOfNodes()):
-    #         for to_index in range(manager.GetNumberOfNodes()):
-    #             if from_index != to_index:
-    #                 cost = routing.GetArcCostForVehicle(from_index, to_index, vehicle_id)
-    #                 print(f"Arc cost from {from_index} to {to_index} for vehicle {vehicle_id}: {cost}")
 
 
 def main():
     data = create_data_model()
-    # print(data[''])
+    print(data['demands'])
+    print(data['checkPickUP'])
+    print(data['checkDrop'])
+    print(data['wait_time'])
+    print(data['num_req_required_trailer'])
+    print(data['list_romooc_indices'])
+    print(data['list_romooc_removing'])
+    # print([i for i in range(data['num_points']*2, data['total_points'])])
+    for i in range(len(data['delivery_time'])):
+        print(data['delivery_time'][i])
+
     manager = pywrapcp.RoutingIndexManager(
         len(data['delivery_time']), data['num_trucks'], data['starts'], data['ends']
     )
     routing = pywrapcp.RoutingModel(manager)
 
-    def distance_callback(from_index, to_index):
+    def time_callback(from_index, to_index):
         '''Returns the delivery-time between the two nodes.'''
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
         return data['delivery_time'][from_node][to_node]
 
     # print(time_callback(2, 5))
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+    transit_callback_index = routing.RegisterTransitCallback(time_callback)
 
     # Define cost of each arc.
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     # Add Distance constraint.
-    dimension_name = "Distance"
+    time_dimension = "Time"
     routing.AddDimension(
         transit_callback_index,
         0,  # no slack
-        30000,  # vehicle maximum travel distance
+        time_max,  # vehicle maximum travel distance
         True,  # start cumul to zero
-        dimension_name,
+        time_dimension,
     )
-    distance_dimension = routing.GetDimensionOrDie(dimension_name)
+    distance_dimension = routing.GetDimensionOrDie(time_dimension)
     distance_dimension.SetGlobalSpanCostCoefficient(100)
-    # print(data['requests'].values())
 
     # Add Pickup and Delivery constraints
     for req in data['requests'].values():
         pickup_index = manager.NodeToIndex(req['pickup_location'])
         delivery_index = manager.NodeToIndex(req['drop_location'])
-        pickup_time = req['pickup_duration']
-        drop_time = req['drop_duration']
-        # print(pickup_index, delivery_index)
         routing.AddPickupAndDelivery(pickup_index, delivery_index)
         routing.solver().Add(routing.VehicleVar(pickup_index) == routing.VehicleVar(delivery_index))
-
-        routing.solver().Add(distance_dimension.SlackVar(pickup_index).SetRange(0, pickup_time))
-        routing.solver().Add(distance_dimension.SlackVar(delivery_index).SetRange(0, drop_time))
-
-        # new_delivery_cumlVar = distance_dimension.CumulVar(delivery_index) + drop_time
-        # routing.solver().Add(distance_dimension.SetCumulVarSoftUpperBound(delivery_index, new_delivery_cumlVar, 1))
-
         routing.solver().Add(distance_dimension.CumulVar(pickup_index) <= distance_dimension.CumulVar(delivery_index))
 
-    # Thêm dimension phụ để đánh dấu trạng thái lấy/trả hàng (0 = chưa lấy, 1 = đã lấy)
-    status_evaluator_index = routing.RegisterUnaryTransitCallback(
-        lambda index: 1)  # Chuyển trạng thái sau khi đi qua điểm
-    routing.AddDimension(
-        status_evaluator_index,
-        0,  # Slack_max = 0 vì không có thời gian chờ
-        1,  # Giới hạn trạng thái (0 -> 1)
-        True,  # Fix_start_cumul_to_zero để khởi đầu bằng 0 (chưa lấy)
-        "Status"  # Tên dimension cho trạng thái
-    )
-    status_dimension = routing.GetDimensionOrDie("Status")
-
+    solver = routing.solver()
+    intervals = []
     for req in data['requests'].values():
         pickup_index = manager.NodeToIndex(req['pickup_location'])
         delivery_index = manager.NodeToIndex(req['drop_location'])
 
-        # Ràng buộc trạng thái tại điểm lấy và trả hàng
-        routing.solver().Add(
-            status_dimension.CumulVar(pickup_index) == 0  # Chưa lấy tại điểm lấy hàng
+        pickup_interval = solver.FixedDurationIntervalVar(
+            distance_dimension.CumulVar(pickup_index),
+            req['pickup_duration'],
+            f"pickup_interval_{pickup_index}"
         )
-        routing.solver().Add(
-            status_dimension.CumulVar(delivery_index) == 1  # Đã lấy trước khi đến điểm trả hàng
+        intervals.append(pickup_interval)
+
+        delivery_interval = solver.FixedDurationIntervalVar(
+            distance_dimension.CumulVar(delivery_index),
+            req['drop_duration'],
+            f"delivery_interval_{delivery_index}"
         )
+        intervals.append(delivery_interval)
+        
 
     def demand_callback(from_index):
         from_node = manager.IndexToNode(from_index)
+        return data['demands'][from_node]
 
-        # Kiểm tra trạng thái của điểm dựa trên dimension phụ "Status"
-        status_value = status_dimension.CumulVar(from_node).Min()
-        if status_value == 0:
-            # Nếu chưa qua điểm lấy hàng, coi đây là điểm lấy hàng
-            for req in data['requests'].values():
-                if req['pickup_location'] == from_node:
-                    return req['size']
-        else:
-            # Nếu đã qua điểm lấy hàng, coi đây là điểm trả hàng
-            for req in data['requests'].values():
-                if req['drop_location'] == from_node:
-                    return -req['size']
-        return 0
-
+    #
     # Đăng ký hàm callback cho tải trọng
     demand_evaluator_index = routing.RegisterUnaryTransitCallback(demand_callback)
 
@@ -242,45 +281,46 @@ def main():
         "Capacity"
     )
 
-    # Định nghĩa dimension cho trạng thái thiết bị trên xe
-    def truck_status_callback(from_index):
-        from_node = manager.IndexToNode(from_index)
-        status_value = status_dimension.CumulVar(from_node).Min()
+    romooc_name = "Romooc"
 
-        if from_node == data['Romooc_location']:
-            return 1  # quay về ấy romooc
-        if status_value == 0:
-            for req in data['requests'].values():
-                if req['pickup_location'] == from_node:
-                    if req['pickup_action'] == 'PICKUP_CONTAINER_TRAILER':
-                        return 1
-        else:
-            for req in data['requests'].values():
-                if req['drop_location'] == from_node:
-                    if req['drop_action'] == 'PICKUP_CONTAINER_TRAILER':
-                        return -1
+    def romooc_callback(to_index):
+        to_node = manager.IndexToNode(to_index)
+        if data['checkPickUP'][to_node]:
+            data['checkPickUP'][to_node] = False
+            return 1
+        if data['checkDrop'][to_node]:
+            data['checkDrop'][to_node] = False
+            return -1
+        if to_node in data['list_romooc_indices']:
+            return 1
+        # if to_node in data['list_romooc_removing']:
+        #     return -1
+
         return 0
 
-    truck_status_index = routing.RegisterUnaryTransitCallback(truck_status_callback)
-    routing.AddDimension(
-        truck_status_index,
-        0,  # Slack max
-        1,  # Xe chỉ có thể mang 1 thiết bị
-        True,  # Thiết lập trạng thái khởi đầu không có thiết bị
-        "Truck"
+    romooc_evaluator_index = routing.RegisterUnaryTransitCallback(romooc_callback)
+
+    routing.AddDimensionWithVehicleCapacity(
+        romooc_evaluator_index,
+        0,
+        data['romooc_capacity'],
+        True,
+        romooc_name
     )
+    romooc_dimension = routing.GetDimensionOrDie(romooc_name)
 
-    truck_dimension = routing.GetDimensionOrDie("Truck")
-    # Ràng buộc xe phải quay lại trả thiết bị về bãi nếu còn còn romooc cuối hành trình
-    for vehicle_id in range(data['num_trucks']):
-        end_index = routing.End(vehicle_id)
-        routing.solver().Add(
-            truck_dimension.CumulVar(end_index) == 0  # Thiết bị phải được trả trước khi kết thúc hành trình
-        )
+    for req in data['requests'].values():
+        pickup_index = manager.NodeToIndex(req['pickup_location'])
+        if req['pickup_action'] == 'PICKUP_CONTAINER':
+            routing.solver().Add(romooc_dimension.CumulVar(pickup_index) == 1)
+        if req['pickup_action'] == 'PICKUP_CONTAINER_TRAILER':
+            routing.solver().Add(romooc_dimension.CumulVar(pickup_index) == 0)
 
-
-
-
+    # before end routing model all vehicle must return to romooc location
+    # for vehicle_id in range(data['num_trucks']):
+    #     index = routing.End(vehicle_id)
+    #     # romooc_state = routing.VehicleVar(index)
+    #     routing.solver().Add(romooc_dimension.CumulVar(index) == 0)
 
 
     # Setting first solution heuristic.
@@ -295,6 +335,8 @@ def main():
 
     # Solve the problem.
     solution = routing.SolveWithParameters(search_parameters)
+
+    # print(routing.DebugOutputAssignment(solution,dimension_name))
     if solution:
         print_solution(data, manager, routing, solution)
     else:
